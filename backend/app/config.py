@@ -36,6 +36,8 @@ class BaseConfig:
     DEFAULT_PAGE_SIZE = 20
     MAX_PAGE_SIZE = 200
     MAX_BATCH_SIZE = 500
+    MAX_IMPORT_ROWS = 5000
+    MAX_CONTENT_LENGTH = 12 * 1024 * 1024  # 批量导入文件上限 12MB
     MAX_EXPORT_ROWS = 20000
 
     AUTO_INIT_DB = _as_bool(os.getenv("AUTO_INIT_DB"), True)

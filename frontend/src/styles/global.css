@@ -280,6 +280,30 @@ ul.plain li { margin-bottom: 5px; }
 .kv dt { color: var(--text-muted); }
 .kv dd { margin: 0; }
 
+/* ---------- import: drop zone & row marks ---------- */
+.drop-zone {
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel-soft);
+  padding: 26px 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  text-align: center;
+  transition: border-color 0.15s, background 0.15s;
+}
+.drop-zone:hover, .drop-zone.drag-over {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+.drop-zone.is-invalid { border-color: var(--danger); background: var(--danger-soft); }
+.drop-icon { font-size: 28px; line-height: 1; }
+
+table.data-table tbody tr.row-invalid { background: #fdf6f6; }
+table.data-table tbody tr.row-invalid:hover { background: var(--danger-soft); }
+
 @media (max-width: 900px) {
   .app { flex-direction: column; }
   .sidebar { width: 100%; flex: none; flex-direction: row; overflow-x: auto; align-items: center; padding: 10px; }

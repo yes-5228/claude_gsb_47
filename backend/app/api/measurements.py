@@ -2,8 +2,11 @@
 from flask import Blueprint, current_app, request
 
 from ..domain.constants import DATA_SOURCE_LABELS, PERIOD_LABELS
-from ..services import measurement_service, query_service, station_service
+from ..errors import ValidationError
+from ..services import import_service, measurement_service, query_service, station_service
+from ..utils.import_template import template_response
 from ..utils.pagination import paginate_query
+from ..utils.table_parser import parse_upload
 from ..utils.validation import Validator
 from .helpers import json_payload, list_payload
 
@@ -112,3 +115,74 @@ def entry_context():
             {"value": key, "label": label} for key, label in DATA_SOURCE_LABELS.items()
         ],
     }
+
+
+# ---- 历史数据批量导入 ---------------------------------------------------
+@bp.get("/import-template")
+def download_import_template():
+    """下载 xlsx 导入模板 (含示例行、填写说明与下拉校验)."""
+    period = request.args.get("period", "hourly")
+    if period not in PERIOD_LABELS:
+        period = "hourly"
+    return template_response(period)
+
+
+def _import_options(data=None):
+    """解析导入请求公共参数: 周期 / 重复策略 / 默认来源 / 录入人."""
+    data = data if isinstance(data, dict) else {}
+    validator = Validator(data)
+    period = validator.choice("period", "数据周期", choices=tuple(PERIOD_LABELS.keys()),
+                              required=False, default="hourly")
+    strategy = validator.choice("strategy", "重复处理策略",
+                                choices=import_service.IMPORT_STRATEGIES,
+                                required=False, default=import_service.STRATEGY_SKIP)
+    data_source = validator.choice("data_source", "默认数据来源",
+                                   choices=tuple(DATA_SOURCE_LABELS.keys()),
+                                   required=False, default="import")
+    recorder = validator.text("recorder", "录入人", required=False, max_length=64)
+    validator.raise_if_invalid("导入参数不合法")
+    return period or "hourly", strategy or import_service.STRATEGY_SKIP, data_source or "import", recorder
+
+
+@bp.post("/import-preview")
+def import_preview():
+    """上传表格 -> 逐行校验预览 (因子/时间/数值/重复行), 不写库."""
+    period, _, data_source, recorder = _import_options(request.form)
+    upload = request.files.get("file")
+    if upload is None:
+        raise ValidationError("请选择需要导入的表格文件", fields={"file": "required"})
+    sheet = parse_upload(upload, max_rows=current_app.config["MAX_IMPORT_ROWS"])
+    column_index = import_service.build_column_index(sheet.headers)
+    raw_rows = import_service.rows_from_sheet(sheet, column_index)
+    if not raw_rows:
+        raise ValidationError("表格没有数据行, 请按模板填写后上传", fields={"file": "empty_rows"})
+    payload = import_service.preview_import(
+        raw_rows, period=period, default_source=data_source, default_recorder=recorder
+    )
+    payload["filename"] = sheet.filename
+    return payload
+
+
+@bp.post("/import-commit")
+def import_commit():
+    """确认后按预览结果入库, 重复数据执行 skip/merge 策略, 返回逐行明细."""
+    data = json_payload()
+    period, strategy, data_source, recorder = _import_options(data)
+    rows = data.get("rows")
+    if not isinstance(rows, list):
+        raise ValidationError("字段 rows 必须是数组", fields={"rows": "invalid"})
+    if not rows:
+        raise ValidationError("没有需要导入的数据行", fields={"rows": "empty"})
+    if len(rows) > current_app.config["MAX_IMPORT_ROWS"]:
+        raise ValidationError(
+            "单次最多导入 %d 行" % current_app.config["MAX_IMPORT_ROWS"],
+            fields={"rows": "too_many"},
+        )
+    raw_rows = import_service.rows_from_payload(rows)
+    return import_service.commit_import(
+        raw_rows,
+        period=period,
+        strategy=strategy,
+        default_source=data_source,
+        default_recorder=recorder,
+    ), 200

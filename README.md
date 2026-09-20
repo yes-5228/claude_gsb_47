@@ -11,6 +11,7 @@
 | 运行概览 | `/overview` | 监测点规模、数据总量、超标与待标注统计、近 7 日数据量趋势、待办超标列表 |
 | 监测点台账 | `/stations` | 台账增删改查、区域/类型/状态筛选、点位详情与分因子统计、级联清理关联数据 |
 | 监测数据录入 | `/measurements` | 按“监测点 + 时刻 + 周期”成组录入多因子浓度、超标校验预览、重复数据覆盖、录入结果回执 |
+| 历史数据导入 | `/imports` | xlsx/csv 批量上传、逐行校验预览(因子/时间/数值/重复)、确认入库、重复跳过或合并、逐行成功失败明细、模板下载 |
 | 超标记录标注 | `/exceedances` | 超标自动建单、单条/批量标注(确认 / 忽略 / 重置)、等级人工修正、标注留痕与统计 |
 | 数据查询 | `/query` | 多条件组合检索、聚合统计(按因子/站点/区域/日/月等)、分页浏览、CSV 导出 |
 
@@ -24,11 +25,11 @@
 
 | 层次 | 选型 |
 | --- | --- |
-| 后端 | Python 3.12 · Flask 3 · Flask-SQLAlchemy 3 · Flask-CORS · Gunicorn |
+| 后端 | Python 3.12 · Flask 3 · Flask-SQLAlchemy 3 · Flask-CORS · openpyxl(xlsx 导入/模板) · Gunicorn |
 | 数据库 | SQLite(默认, 零依赖) / PostgreSQL 16(可选, compose 覆盖文件) |
 | 前端 | React 18 · React Router 6 · Vite 7 · Axios · 原生 CSS(设计令牌 + 组件类) |
 | 部署 | Docker 多阶段构建 · Nginx 静态托管与 `/api` 反向代理 · docker compose |
-| 测试 | Pytest(43 个后端用例: 接口 + 领域规则) |
+| 测试 | Pytest(58 个后端用例: 接口 + 领域规则 + 批量导入) |
 
 ## 目录结构
 
@@ -158,6 +159,9 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d --buil
 | GET | `/api/measurements` | 监测数据分页查询(含筛选汇总) |
 | POST | `/api/measurements/entries` | **成组录入**: 一个监测点 + 一个时刻 + 多个因子 |
 | POST | `/api/measurements/preview` | 超标校验预览(不写库) |
+| GET | `/api/measurements/import-template` | 下载历史数据导入 xlsx 模板(示例行 + 下拉校验 + 填写说明) |
+| POST | `/api/measurements/import-preview` | **批量导入第一步**: 上传表格, 逐行校验因子/时间/数值/重复(不写库) |
+| POST | `/api/measurements/import-commit` | **批量导入第二步**: 确认后入库, `strategy=skip/merge` 处理重复, 返回逐行明细 |
 | DELETE | `/api/measurements/{id}` | 删除监测数据 |
 | GET | `/api/measurements/export` | 按条件导出 CSV |
 | GET | `/api/exceedances` | 超标记录查询(含筛选统计) |
@@ -200,6 +204,41 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d --buil
 }
 ```
 
+### 历史数据批量导入
+
+两阶段确认式流程, 避免大批量脏数据直接落库:
+
+1. **上传校验预览** `POST /api/measurements/import-preview`(`multipart/form-data`: `file` + `period` + `strategy` + `data_source` + `recorder`)。
+   支持 `.xlsx`(需 openpyxl)与 `.csv`(自动识别 UTF-8/GBK), 单次最多 5000 行、文件不超过 12MB。
+   必需列: **监测点编码、监测因子、监测时间、数值**; 可选列: 数据来源、录入人、备注(表头中英文均可, 见模板)。
+   每行给出四类结论:
+
+   - 因子: 支持 `PM25/PM2.5/PM2.5`、`SO2/SO₂/二氧化硫` 等代码/名称写法, 未知因子逐行报错;
+   - 监测时间: 支持 `YYYY-MM-DD HH:MM`、`YYYY/MM/DD HH:MM`、中文日期; 日均值可只填日期;
+   - 数值: 必须为 0~10000 的数字, 并即时给出达标/超标倍数与分级;
+   - 重复行: 同时检查**文件内重复**(同站点+因子+周期+时刻, 后一行判失败)与**库中重复**(标记原值与记录 id)。
+
+2. **确认入库** `POST /api/measurements/import-commit`, 回传预览行中的原始单元格(`rows[].raw`),
+   服务端**重新校验 + 重新查重**(不信任预览结论, 防止预览后数据变动), 重复数据按两种策略处理:
+
+   - `skip` 跳过: 保留库中原值, 该行返回 `skipped`;
+   - `merge` 合并: 用导入值覆盖并重新判定超标(超限自动建待标注单, 降回限值以下自动撤单)。
+
+   入库以保存点逐行隔离: 单行数据库异常只回滚该行并记为 `failed`, 不影响其它行。
+   响应逐行返回 `created / updated / skipped / failed` 状态、记录 id、超标等级与失败原因, 并汇总计数。
+
+```json
+{
+  "summary": { "total": 3, "created_count": 1, "updated_count": 1, "skipped_count": 0,
+               "failed_count": 1, "exceeded_count": 1 },
+  "details": [
+    { "row_number": 2, "station_code": "SZ-AQ-001", "pollutant_label": "SO₂",
+      "status": "updated", "measurement_id": 1201, "is_exceeded": true,
+      "exceedance_level": "light", "message": "重复数据已合并覆盖(记录 id=1201)" }
+  ]
+}
+```
+
 ## 数据模型
 
 | 表 | 关键字段 | 说明 |
@@ -228,7 +267,7 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d --buil
 
 ```bash
 cd backend
-python -m pytest -q          # 43 个用例: 台账 CRUD/级联、录入与超标判定、标注规则、查询统计与导出、元数据接口
+python -m pytest -q          # 58 个用例: 台账 CRUD/级联、录入与超标判定、批量导入(预览/重复/两种策略/故障隔离)、标注规则、查询统计与导出、元数据接口
 
 cd frontend
 npm run build                # 生产构建校验
