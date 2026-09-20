@@ -54,10 +54,39 @@ POLLUTANTS = {
 
 POLLUTANT_CODES = tuple(POLLUTANTS.keys())
 
+# 历史导入表格中可能出现的因子写法 (编码/中文名/带角标的化学式)
+POLLUTANT_ALIASES = {
+    "PM25": "PM25",
+    "PM2.5": "PM25",
+    "细颗粒物": "PM25",
+    "PM10": "PM10",
+    "可吸入颗粒物": "PM10",
+    "SO2": "SO2",
+    "SO₂": "SO2",
+    "二氧化硫": "SO2",
+    "NO2": "NO2",
+    "NO₂": "NO2",
+    "二氧化氮": "NO2",
+    "CO": "CO",
+    "一氧化碳": "CO",
+    "O3": "O3",
+    "O₃": "O3",
+    "臭氧": "O3",
+}
+
 
 def get_pollutant(code):
     """Return the pollutant definition or None when unknown."""
     return POLLUTANTS.get(str(code or "").upper())
+
+
+def resolve_pollutant(text):
+    """Map a spreadsheet cell (code / Chinese name / subscript formula) to a canonical code."""
+    key = str(text or "").strip().upper()
+    if not key:
+        return None
+    canonical = POLLUTANT_ALIASES.get(key)
+    return canonical if canonical in POLLUTANTS else None
 
 
 def get_limit(code, period):

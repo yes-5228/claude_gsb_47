@@ -8,13 +8,23 @@ DATETIME_FORMATS = (
     "%Y-%m-%dT%H:%M",
     "%Y-%m-%d %H:%M:%S",
     "%Y-%m-%d %H:%M",
+    "%Y-%m-%d",
+    "%Y/%m/%d %H:%M:%S",
+    "%Y/%m/%d %H:%M",
+    "%Y/%m/%d",
+    "%Y.%m.%d %H:%M",
+    "%Y.%m.%d",
+    "%Y%m%d%H%M",
+    "%Y%m%d",
 )
-DATE_FORMATS = ("%Y-%m-%d", "%Y/%m/%d")
+DATE_FORMATS = ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d")
 
 
 def parse_datetime(value, field="时间"):
     if isinstance(value, datetime):
         return value
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day)
     text = str(value or "").strip().replace("Z", "")
     if not text:
         raise ValidationError("%s不能为空" % field, fields={field: "required"})
@@ -26,6 +36,23 @@ def parse_datetime(value, field="时间"):
     raise ValidationError(
         "%s格式应为 YYYY-MM-DD HH:MM" % field, fields={field: "invalid_datetime"}
     )
+
+
+def parse_lax_datetime(value):
+    """Like :func:`parse_datetime` for row-level import validation; returns None on failure."""
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day)
+    text = str(value or "").strip().replace("Z", "")
+    if not text:
+        return None
+    for fmt in DATETIME_FORMATS:
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
 
 
 def parse_date(value, field="日期"):
